@@ -5,6 +5,7 @@ import subprocess
 import json
 import string
 import re
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -76,7 +77,8 @@ class AnalysisEngine:
             "flutter_files": app_base_directory / "Flutter_Files",
             "native_libraries": app_base_directory / "Native_Libraries",
             "js_framework_files": app_base_directory / "JS_Framework_Files",
-            "ghidra_workspace": app_base_directory / "Ghidra_Workspace"
+            "ghidra_workspace": app_base_directory / "Ghidra_Workspace",
+            "blutter_output": app_base_directory / "Blutter_Output"
         }
 
         for key, directory_path in directories.items():
@@ -547,54 +549,119 @@ class AnalysisEngine:
 
         return False, ""
 
-    def _prepare_ghidra_workspace(self, dirs: dict):
+    def _detect_available_architecture(self, dirs: dict) -> Optional[str]:
+        """
+        flutter_files/lib altında orijinal libapp.so bulunan ilk mimariyi
+        (öncelik sırasına göre: arm64-v8a > armeabi-v7a > x86_64 > x86) döndürür.
+        Öncelik listesinde eşleşme yoksa diskte fiilen bulunan herhangi bir
+        mimariyi kabul eder. Hiçbiri yoksa None döner.
+        """
+        architecture_priority = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"]
+        flutter_lib_dir = dirs["flutter_files"] / "lib"
+
+        for arch in architecture_priority:
+            if (flutter_lib_dir / arch / "libapp.so").exists():
+                return arch
+
+        if flutter_lib_dir.exists():
+            for arch_dir in flutter_lib_dir.iterdir():
+                if arch_dir.is_dir() and (arch_dir / "libapp.so").exists():
+                    return arch_dir.name
+
+        return None
+
+    def _prepare_ghidra_workspace(self, dirs: dict, target_arch: Optional[str]):
+        """Tespit edilen mimariye ait orijinal + (varsa) patch'lenmiş kütüphaneleri Ghidra workspace'ine toplar."""
         self._send_log("[Ghidra] Tüm kütüphaneler (.so) çalışma alanına toplanıyor...", internal=True)
         ghidra_dir = dirs["ghidra_workspace"]
 
-        architecture_priority = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"]
+        if target_arch is None:
+            self._send_log(
+                "[Ghidra Uyarı] Desteklenen bir mimari (.so) bulunamadığından hazırlık atlandı.",
+                is_error=True)
+            return
 
         flutter_lib_dir = dirs["flutter_files"] / "lib"
         reflutter_libs_dir = dirs["flutter_files"] / "Refluttered_Libs" / "lib"
 
-        # Hangi mimarilerde hem orijinal libapp.so hem de patched libflutter.so
-        target_arch = None
-        for arch in architecture_priority:
-            candidate_libapp = flutter_lib_dir / arch / "libapp.so"
-            candidate_patched = reflutter_libs_dir / arch / "libflutter.so"
-            if candidate_libapp.exists() and candidate_patched.exists():
-                target_arch = arch
-                break
+        original_libapp = flutter_lib_dir / target_arch / "libapp.so"
+        patched_libflutter = reflutter_libs_dir / target_arch / "libflutter.so"
 
-        if target_arch is None and flutter_lib_dir.exists():
-            for arch_dir in flutter_lib_dir.iterdir():
-                if not arch_dir.is_dir():
-                    continue
-                candidate_patched = reflutter_libs_dir / arch_dir.name / "libflutter.so"
-                if (arch_dir / "libapp.so").exists() and candidate_patched.exists():
-                    target_arch = arch_dir.name
-                    break
-
-        if target_arch is None:
-            self._send_log(
-                "[Ghidra Uyarı] Hiçbir mimari için orijinal+patched Flutter kütüphane eşleşmesi bulunamadı.",
-                is_error=True)
-        else:
-            original_libapp = flutter_lib_dir / target_arch / "libapp.so"
-            patched_libflutter = reflutter_libs_dir / target_arch / "libflutter.so"
-
+        if original_libapp.exists():
             shutil.copy2(str(original_libapp), str(ghidra_dir / "libapp.so"))
-            shutil.copy2(str(patched_libflutter), str(ghidra_dir / "patched_libflutter.so"))
-            self._send_log(f"[Ghidra] Kullanılan mimari: {target_arch}", internal=True)
+        else:
+            self._send_log(f"[Ghidra Uyarı] {target_arch} için orijinal libapp.so bulunamadı.", is_error=True)
 
-            native_arch_dir = dirs["native_libraries"] / target_arch
-            if native_arch_dir.exists():
-                for so_file in native_arch_dir.glob("*.so"):
-                    shutil.copy2(str(so_file), str(ghidra_dir / so_file.name))
+        if patched_libflutter.exists():
+            shutil.copy2(str(patched_libflutter), str(ghidra_dir / "patched_libflutter.so"))
+        else:
+            self._send_log(
+                "[Ghidra] Patch'lenmiş libflutter.so bulunamadı, sadece libapp.so ile devam ediliyor.",
+                internal=True)
+
+        native_arch_dir = dirs["native_libraries"] / target_arch
+        if native_arch_dir.exists():
+            for so_file in native_arch_dir.glob("*.so"):
+                shutil.copy2(str(so_file), str(ghidra_dir / so_file.name))
 
         toplam_kutuphane = len(list(ghidra_dir.glob('*.so')))
-        self._send_log(f"[Ghidra] Hazır! Toplam {toplam_kutuphane} adet kütüphane Ghidra Workspace'e kopyalandı.",
-                       internal=False)
+        self._send_log(
+            f"[Ghidra] Hazır! Toplam {toplam_kutuphane} adet kütüphane Ghidra Workspace'e kopyalandı (mimari: {target_arch}).",
+            internal=False)
 
+    def _run_blutter_analysis(self, dirs: dict, target_arch: str) -> bool:
+        """
+        Blutter'ı çalıştırarak Dart AOT snapshot'ından class/method/string tablosunu
+        ve Ghidra/IDA script'lerini çıkartır.
+
+        ÖNEMLİ: reflutter'dan geçmiş (patched) libflutter.so DEĞİL, orijinal eşleşen
+        libapp.so + libflutter.so çifti kullanılmalı; aksi halde Blutter Dart
+        sürümünü doğru tespit edemez ve hata verir.
+
+        Blutter şu an yalnızca arm64-v8a destekliyor; çağıran taraf (process_application)
+        bunu garanti etmelidir.
+        """
+        blutter_script_path = self.dependencies.get('blutter_script')
+        if not blutter_script_path or not Path(blutter_script_path).exists():
+            self._send_log(
+                "[Blutter Hatası] 'blutter_script' yolu bulunamadı veya geçersiz. Lütfen ayarlardan kontrol edin.",
+                is_error=True)
+            return False
+
+        blutter_script = Path(blutter_script_path)
+
+        input_lib_dir = dirs["flutter_files"] / "lib" / target_arch
+        original_libapp = input_lib_dir / "libapp.so"
+        original_libflutter = input_lib_dir / "libflutter.so"
+
+        if not original_libapp.exists() or not original_libflutter.exists():
+            self._send_log(
+                f"[Blutter Uyarı] {target_arch} için orijinal libapp.so/libflutter.so çifti bulunamadığından atlandı.",
+                is_error=True)
+            return False
+
+        output_dir = dirs["blutter_output"] / target_arch
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        self._send_log(
+            "[Blutter] Dart snapshot analizi başlatılıyor (ilk çalıştırmada Dart SDK derlemesi uzun sürebilir)...",
+            internal=False)
+
+        command_arguments = [sys.executable, str(blutter_script), str(input_lib_dir), str(output_dir)]
+
+        is_success, error_message = self._execute_terminal_command(
+            command_arguments,
+            log_prefix="[Blutter]",
+            timeout_seconds=3600,
+            custom_cwd=blutter_script.parent
+        )
+
+        if is_success:
+            self._send_log(f"[Blutter] Analiz tamamlandı! Çıktı: {output_dir}", internal=False)
+            return True
+        else:
+            self._send_log(f"[Blutter Hatası] Analiz başarısız oldu: {error_message}", is_error=True)
+            return False
 
     def run_ghidra_analysis(self, ghidra_workspace_dir: Path, project_name: str) -> bool:
         """
@@ -697,8 +764,6 @@ class AnalysisEngine:
                         if base_apks:
                             apk_to_reflutter = base_apks[0]
 
-
-
                 if apk_to_reflutter:
                     refluttered_apk_path = self._apply_reflutter(apk_to_reflutter, dirs["flutter_files"])
 
@@ -727,7 +792,19 @@ class AnalysisEngine:
                 self._send_log(f"[Isolator] {native_lib_count} native library (.so) dosyası çıkartıldı.", internal=True)
 
             if is_flutter_app:
-                self._prepare_ghidra_workspace(dirs)
+                detected_arch = self._detect_available_architecture(dirs)
+
+                if user_options.get('enable_blutter') and self.dependencies.get('blutter_script'):
+                    if detected_arch == "arm64-v8a":
+                        self._run_blutter_analysis(dirs, detected_arch)
+                    elif detected_arch:
+                        self._send_log(
+                            f"[Blutter] Şu an yalnızca arm64-v8a destekleniyor, tespit edilen mimari ({detected_arch}) atlandı.",
+                            is_error=True)
+                    else:
+                        self._send_log("[Blutter] Desteklenen bir mimari bulunamadığından atlandı.", is_error=True)
+
+                self._prepare_ghidra_workspace(dirs, detected_arch)
 
             if user_options.get('enable_decompilation') and self.dependencies.get('dex2jar'):
                 self._scan_and_decompile_dex(dirs["extracted_files"], dirs["decompiled_jars"], dirs["intellij_project"],

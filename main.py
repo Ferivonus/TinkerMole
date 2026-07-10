@@ -117,6 +117,37 @@ class VulnerabilityScannerUI:
 
         return ghidra_headless_path
 
+    def _get_or_prompt_blutter_path(self) -> str:
+        """blutter.py yolunu konfigürasyondan alır, yoksa kullanıcıya sorar."""
+        blutter_script_path = None
+        if self.system_configuration_path.exists():
+            try:
+                with open(self.system_configuration_path, 'r', encoding='utf-8') as config_file:
+                    blutter_script_path = json.load(config_file).get('blutter_script_path')
+            except Exception:
+                pass
+
+        if not blutter_script_path or not Path(blutter_script_path).exists():
+            messagebox.showinfo(
+                "Blutter Configuration Required",
+                "Dart string/class çıkarımı için Blutter seçildi ancak sistem 'blutter.py' dosyasını bulamadı.\n\n"
+                "Lütfen açılan pencerede blutter deposundaki 'blutter.py' dosyasını seçin.\n"
+                "(Blutter deposu klonlanmış ve kurulum adımları tamamlanmış olmalıdır)\n\n"
+                "Bu işlem sadece bir kere sorulacaktır."
+            )
+
+            blutter_script_path = filedialog.askopenfilename(
+                title="Locate blutter.py",
+                filetypes=[("Python Script", "blutter.py"), ("All Files", "*.*")]
+            )
+
+            if blutter_script_path:
+                self._update_config_file('blutter_script_path', blutter_script_path)
+            else:
+                return ""
+
+        return blutter_script_path
+
     def _apply_visual_theme(self):
         """Arayüz stillerini uygular."""
         style_manager = ttk.Style(self.root_window)
@@ -206,13 +237,16 @@ class VulnerabilityScannerUI:
         self.enable_decompilation_option = tk.BooleanVar(value=True)
         self.enable_vulnerability_scan_option = tk.BooleanVar(value=True)
         self.enable_auto_ghidra_option = tk.BooleanVar(value=True)
+        self.enable_blutter_option = tk.BooleanVar(value=True)
 
         user_selectable_options = [
             ("Secure Original Packages (Move to Backups)", self.enable_backup_option),
             ("Decompile DEX to JAR & Generate IntelliJ IDE Project", self.enable_decompilation_option),
             ("Extract Vulnerabilities, API Keys & Dump Binary Strings", self.enable_vulnerability_scan_option),
             ("If Flutter detected, automatically analyze and open in Ghidra (Otomatik Ghidra)",
-             self.enable_auto_ghidra_option)
+             self.enable_auto_ghidra_option),
+            ("If Flutter detected (arm64), extract Dart classes/strings with Blutter",
+             self.enable_blutter_option)
         ]
 
         for index, (description, boolean_variable) in enumerate(user_selectable_options):
@@ -342,6 +376,13 @@ class VulnerabilityScannerUI:
                 return
             self.system_dependencies['ghidra_headless'] = ghidra_path
 
+        if self.enable_blutter_option.get():
+            blutter_path = self._get_or_prompt_blutter_path()
+            if not blutter_path:
+                self._write_system_log("Blutter script yolu belirtilmediği için analiz başlatılamadı.", is_error=True)
+                return
+            self.system_dependencies['blutter_script'] = blutter_path
+
         self.start_analysis_button.config(state="disabled", text="PROCESSING...")
         self.cancel_analysis_button.config(state="normal")
         self.browse_files_button.config(state="disabled")
@@ -353,7 +394,8 @@ class VulnerabilityScannerUI:
             'enable_backup': self.enable_backup_option.get(),
             'enable_decompilation': self.enable_decompilation_option.get(),
             'enable_vulnerability_scan': self.enable_vulnerability_scan_option.get(),
-            'enable_auto_ghidra': self.enable_auto_ghidra_option.get()
+            'enable_auto_ghidra': self.enable_auto_ghidra_option.get(),
+            'enable_blutter': self.enable_blutter_option.get()
         }
 
         self.activity_progress_bar.start(10)
@@ -416,7 +458,7 @@ class VulnerabilityScannerUI:
         app_name = target_project_directory.name
         ghidra_workspace_dir = target_project_directory / "Ghidra_Workspace"
 
-        if ghidra_workspace_dir.exists() and (ghidra_workspace_dir / "patched_libflutter.so").exists():
+        if ghidra_workspace_dir.exists() and (ghidra_workspace_dir / "libapp.so").exists():
             self._write_system_log("Flutter projesi tespit edildi! Ghidra arka plan analizi başlatılıyor...",
                                    internal=False)
 
