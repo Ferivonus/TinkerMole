@@ -1,0 +1,27 @@
+# --- Open Source Licenses & Organizations ---
+apache.org/licenses
+w3.org
+xmlns.jcp.org
+tools.ietf.org
+gnu.org/licenses
+opensource.org/licenses
+
+# --- Android & Mobile XML Schemas ---
+schemas.android.com
+apk/res/android
+apk/res-auto
+ns.adobe.com
+
+# --- Common App Store & Generic Links ---
+play.google.com
+apple.com
+github.com
+example.com
+fonts.googleapis.com
+g.co/
+support.google.com
+stackoverflow.com
+
+# --- Generic Android Identifiers ---
+android.intent.action
+android.intent.category

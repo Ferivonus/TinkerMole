@@ -1,0 +1,25 @@
+
+# --- Documentation & Legal Files ---
+license
+license.txt
+licenses.txt
+notice
+notice.txt
+readme.md
+readme.txt
+changelog.md
+changelog
+third_party_notices.txt
+third_party_notices.md
+
+# --- Noisy System & Web Files ---
+public-suffix-list.txt
+robots.txt
+.gitignore
+.npmignore
+.prettierrc
+.eslintrc
+
+# --- Android Build & Config Noise (Safe to skip for secrets) ---
+proguard-rules.pro
+consumer-rules.pro
