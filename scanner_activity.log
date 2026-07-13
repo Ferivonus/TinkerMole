@@ -1,3 +1,61 @@
-[2026-07-10 22:11:31] [INFO] --- System Diagnostics ---
-[2026-07-10 22:11:31] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
-[2026-07-10 22:11:31] [INFO] --- Ready ---
+[2026-07-12 20:09:26] [INFO] --- System Diagnostics ---
+[2026-07-12 20:09:26] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-12 20:09:26] [INFO] --- Ready ---
+[2026-07-12 20:09:56] [INFO] --- System Diagnostics ---
+[2026-07-12 20:09:56] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-12 20:09:56] [INFO] --- Ready ---
+[2026-07-12 20:09:57] [INFO] Engine initialized. Starting analysis threads...
+[2026-07-12 20:10:40] [INFO] Flutter projesi tespit edildi! Ghidra arka plan analizi başlatılıyor...
+[2026-07-12 20:17:47] [INFO] Analysis completed successfully! Processed 1 file(s) in 43.81s.
+[2026-07-12 20:17:47] [INFO] [Ghidra] Analiz tamamlandı. Ghidra arayüzü (GUI) otomatik olarak başlatılıyor...
+[2026-07-12 22:38:22] [INFO] --- System Diagnostics ---
+[2026-07-12 22:38:22] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-12 22:38:22] [INFO] --- Ready ---
+[2026-07-12 22:38:57] [INFO] --- System Diagnostics ---
+[2026-07-12 22:38:57] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-12 22:38:57] [INFO] --- Ready ---
+[2026-07-12 22:39:25] [INFO] Engine initialized. Starting analysis threads...
+[2026-07-12 22:40:09] [INFO] Flutter projesi tespit edildi! Ghidra arka plan analizi başlatılıyor...
+[2026-07-12 22:46:25] [INFO] Analysis completed successfully! Processed 1 file(s) in 43.97s.
+[2026-07-12 22:46:25] [INFO] [Ghidra] Analiz tamamlandı. Ghidra arayüzü (GUI) otomatik olarak başlatılıyor...
+[2026-07-13 12:20:02] [INFO] --- System Diagnostics ---
+[2026-07-13 12:20:02] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-13 12:20:02] [INFO] --- Ready ---
+[2026-07-13 12:20:38] [INFO] --- System Diagnostics ---
+[2026-07-13 12:20:38] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-13 12:20:38] [INFO] --- Ready ---
+[2026-07-13 12:20:47] [INFO] Engine initialized. Starting analysis threads...
+[2026-07-13 12:21:43] [INFO] Flutter projesi tespit edildi! Ghidra arka plan analizi başlatılıyor...
+[2026-07-13 12:24:00] [INFO] --- System Diagnostics ---
+[2026-07-13 12:24:00] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-13 12:24:00] [INFO] --- Ready ---
+[2026-07-13 12:24:13] [INFO] --- System Diagnostics ---
+[2026-07-13 12:24:13] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-13 12:24:13] [INFO] --- Ready ---
+[2026-07-13 12:24:24] [INFO] Engine initialized. Starting analysis threads...
+[2026-07-13 12:25:15] [INFO] Flutter projesi tespit edildi! Ghidra arka plan analizi başlatılıyor...
+[2026-07-13 12:32:40] [INFO] Analysis completed successfully! Processed 1 file(s) in 50.93s.
+[2026-07-13 12:32:40] [INFO] [Ghidra] Analiz tamamlandı. Ghidra arayüzü (GUI) otomatik olarak başlatılıyor...
+[2026-07-13 12:47:11] [INFO] --- System Diagnostics ---
+[2026-07-13 12:47:11] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-13 12:47:11] [INFO] --- Ready ---
+[2026-07-13 12:48:38] [INFO] --- System Diagnostics ---
+[2026-07-13 12:48:38] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-13 12:48:38] [INFO] --- Ready ---
+[2026-07-13 12:48:45] [INFO] --- System Diagnostics ---
+[2026-07-13 12:48:45] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-13 12:48:45] [INFO] --- Ready ---
+[2026-07-13 12:48:52] [INFO] Engine initialized. Starting analysis threads...
+[2026-07-13 12:49:40] [INFO] Flutter projesi tespit edildi! Ghidra arka plan analizi başlatılıyor...
+[2026-07-13 12:57:15] [INFO] Analysis completed successfully! Processed 1 file(s) in 48.41s.
+[2026-07-13 12:57:15] [INFO] [Ghidra] Analiz tamamlandı. Ghidra arayüzü (GUI) otomatik olarak başlatılıyor...
+[2026-07-13 15:41:27] [INFO] --- System Diagnostics ---
+[2026-07-13 15:41:27] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-13 15:41:27] [INFO] --- Ready ---
+[2026-07-13 15:41:32] [INFO] --- System Diagnostics ---
+[2026-07-13 15:41:32] [INFO] [OK] DEX2JAR verified at: D:\yazilim\my_codes\python\reverse-apk-helper-apk-to-zip\dex-tools\d2j-dex2jar.bat
+[2026-07-13 15:41:32] [INFO] --- Ready ---
+[2026-07-13 15:41:34] [INFO] Engine initialized. Starting analysis threads...
+[2026-07-13 15:42:33] [INFO] Flutter projesi tespit edildi! Ghidra arka plan analizi başlatılıyor...
+[2026-07-13 15:48:30] [INFO] Analysis completed successfully! Processed 1 file(s) in 58.52s.
+[2026-07-13 15:48:30] [INFO] [Ghidra] Analiz tamamlandı. Ghidra arayüzü (GUI) otomatik olarak başlatılıyor...

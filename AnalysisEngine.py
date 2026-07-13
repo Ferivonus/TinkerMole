@@ -3,9 +3,12 @@ import shutil
 import zipfile
 import subprocess
 import json
-import string
 import re
 import sys
+import time
+import queue
+import threading
+import functools
 from pathlib import Path
 from typing import Optional
 
@@ -39,14 +42,14 @@ class AnalysisEngine:
         )
 
     def _load_filter_list(self, file_path: Path, default_items: list, as_set: bool = False):
-        """Bir metin dosyasından filtre öğelerini yükler. Yoksa varsayılanlarla oluşturur."""
         if file_path.exists():
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     lines = [line.strip().lower() for line in f.readlines() if
                              line.strip() and not line.startswith('#')]
                 return set(lines) if as_set else lines
-            except Exception:
+            except Exception as e:
+                self._send_log(f"[Sistem] {file_path.name} okunamadı: {e}", is_error=True, internal=True)
                 return set(default_items) if as_set else default_items
         else:
             try:
@@ -54,17 +57,16 @@ class AnalysisEngine:
                     f.write("# Yoksayılacak öğeleri ekleyin (her satıra bir tane). # ile başlayan satırlar yorumdur.\n")
                     for item in default_items:
                         f.write(f"{item}\n")
-            except Exception:
-                pass
+            except Exception as e:
+                self._send_log(f"[Sistem] Varsayılan {file_path.name} oluşturulamadı: {e}", is_error=True,
+                               internal=True)
             return set(default_items) if as_set else default_items
 
     def _send_log(self, message: str, is_error: bool = False, internal: bool = False):
-        """UI (Kullanıcı Arayüzü) tarafına log mesajları gönderir."""
         self.log_queue.put((message, is_error, internal))
 
     @staticmethod
     def setup_project_directories(base_directory: Path, application_name: str) -> dict:
-        """Proje analizi için gerekli klasör hiyerarşisini oluşturur."""
         app_base_directory = base_directory / application_name
 
         directories = {
@@ -87,9 +89,58 @@ class AnalysisEngine:
 
         return directories
 
+    @functools.lru_cache(maxsize=1)
+    def _get_vsdev_env(self) -> dict:
+
+        if os.name != 'nt':
+            return dict(os.environ)
+
+        vcvarsall_candidates = [
+            r"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat",
+            r"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat",
+            r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
+            r"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat",
+            r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat",
+            r"C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvarsall.bat",
+        ]
+
+        custom_vcvarsall = self.dependencies.get('vcvarsall_path')
+        if custom_vcvarsall:
+            vcvarsall_candidates.insert(0, custom_vcvarsall)
+
+        vcvarsall = next((p for p in vcvarsall_candidates if Path(p).exists()), None)
+
+        if not vcvarsall:
+            self._send_log(
+                "[Blutter] vcvarsall.bat bulunamadı, mevcut process ortamıyla devam ediliyor "
+                "(ilk derleme cmake/link hatası verirse bu muhtemel sebep).",
+                internal=True)
+            return dict(os.environ)
+
+        try:
+            command = f'"{vcvarsall}" x64 && set'
+            result = subprocess.run(
+                command, shell=True, capture_output=True, text=True,
+                encoding='utf-8', errors='replace', timeout=60
+            )
+            env = dict(os.environ)
+            for line in result.stdout.splitlines():
+                if '=' in line:
+                    key, _, value = line.partition('=')
+                    if key:
+                        env[key] = value
+            self._send_log(f"[Blutter] VS derleyici ortamı yüklendi ({Path(vcvarsall).parent.parent.parent.name}).",
+                           internal=True)
+            return env
+        except Exception as e:
+            self._send_log(f"[Blutter] vcvarsall.bat çalıştırılamadı: {e}. Mevcut ortamla devam ediliyor.",
+                           internal=True)
+            return dict(os.environ)
+
     def _execute_terminal_command(self, command_arguments: list, log_prefix: str = "",
                                   timeout_seconds: int = 300, custom_cwd: Optional[Path] = None,
-                                  input_data: Optional[str] = None) -> tuple:
+                                  input_data: Optional[str] = None, env: Optional[dict] = None) -> tuple:
+
         process = None
         try:
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
@@ -99,35 +150,69 @@ class AnalysisEngine:
                 tool_path.parent if tool_path.resolve().exists() else None)
 
             process = subprocess.Popen(
-                args=command_arguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE,
+                args=command_arguments, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 creationflags=creation_flags, cwd=working_directory, text=True, encoding='utf-8', errors='replace',
-                bufsize=1
+                bufsize=1, env=env
             )
 
             if input_data:
                 try:
                     process.stdin.write(input_data + "\n")
                     process.stdin.flush()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._send_log(f"{log_prefix} Input yazma hatası: {e}", internal=True)
+
             if process.stdin:
                 process.stdin.close()
 
+            line_queue: "queue.Queue" = queue.Queue()
+
+            def _reader():
+                try:
+                    for raw_line in iter(process.stdout.readline, ''):
+                        line_queue.put(raw_line)
+                except Exception:
+                    pass
+                finally:
+                    line_queue.put(None)
+
+            reader_thread = threading.Thread(target=_reader, daemon=True)
+            reader_thread.start()
+
+            deadline = time.monotonic() + timeout_seconds
             last_error_message = ""
-            for line in iter(process.stdout.readline, ''):
+            fallback_last_line = ""
+
+            while True:
                 if self.stop_event.is_set():
                     process.terminate()
                     return False, "Süreç kullanıcı tarafından iptal edildi."
 
+                if time.monotonic() > deadline:
+                    process.kill()
+                    return False, f"Süreç {timeout_seconds} saniye içinde tamamlanamadı (zaman aşımı / hang)."
+
+                try:
+                    line = line_queue.get(timeout=1)
+                except queue.Empty:
+                    continue
+
+                if line is None:
+                    break
+
                 line = line.strip()
-                if not line: continue
+                if not line:
+                    continue
 
                 if "ignored invalid inner class name" in line.lower():
                     continue
 
-                last_error_message = line
-                display_message = line
+                fallback_last_line = line
+                lowered = line.lower()
+                if any(keyword in lowered for keyword in ("error", "failed", "fatal", "exception")):
+                    last_error_message = line
 
+                display_message = line
                 if "I: " in line:
                     display_message = line.split("I: ")[-1]
                 elif "INFO " in line:
@@ -137,25 +222,31 @@ class AnalysisEngine:
                 elif "WARN: " in line:
                     display_message = "WARNING: " + line.split("WARN: ")[-1]
 
-                if len(display_message) > 100: display_message = display_message[:97] + "..."
+                if len(display_message) > 100:
+                    display_message = display_message[:97] + "..."
 
                 if log_prefix:
                     self._send_log(f"{log_prefix} {display_message}", internal=False)
                 else:
                     self._send_log(display_message, internal=True)
 
-            process.wait(timeout=timeout_seconds)
-            return (True, "") if process.returncode == 0 else (False, last_error_message)
+            reader_thread.join(timeout=5)
 
-        except subprocess.TimeoutExpired:
-            if process:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
                 process.kill()
-            return False, "Süreç zaman aşımına uğradı."
+                return False, "Süreç kapanmadı, zorla sonlandırıldı."
+
+            if process.returncode == 0:
+                return True, ""
+
+            return False, last_error_message or fallback_last_line or "Bilinmeyen hata (çıkış kodu != 0)."
+
         except Exception as error:
             return False, str(error)
 
     def _unpack_archive_securely(self, archive_path: Path, destination_directory: Path) -> bool:
-        """ZIP/APK dosyalarını güvenli bir şekilde dışarı aktarır."""
         self._send_log(f"[Extractor] Güvenli çıkarma başlatıldı -> {archive_path.name}")
         try:
             with zipfile.ZipFile(archive_path, 'r') as zip_reference:
@@ -170,12 +261,13 @@ class AnalysisEngine:
 
                     target_path = destination_directory / safe_filename
                     target_path_resolved = target_path.resolve()
-                    target_path_string = str(target_path_resolved)
-                    dest_dir_string = str(destination_directory.resolve())
 
-                    if not target_path_string.startswith(dest_dir_string + os.sep):
-                        self._send_log(f"[Security] Kötü niyetli dosya yolu engellendi: {safe_filename}", is_error=True)
+                    if not target_path_resolved.is_relative_to(destination_directory.resolve()):
+                        self._send_log(f"[Security] Kötü niyetli dosya yolu (Zip Slip) engellendi: {safe_filename}",
+                                       is_error=True)
                         continue
+
+                    target_path_string = str(target_path_resolved)
 
                     if os.name == 'nt' and len(target_path_string) > 250 and not target_path_string.startswith(
                             '\\\\?\\'):
@@ -190,44 +282,38 @@ class AnalysisEngine:
                             with zip_reference.open(member) as source_file, open(target_path_string,
                                                                                  "wb") as target_file:
                                 shutil.copyfileobj(source_file, target_file)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            self._send_log(f"[Extractor] {safe_filename} yazılamadı: {e}", internal=True)
             return True
+        except zipfile.BadZipFile:
+            self._send_log(f"[Error] Bozuk arşiv formatı {archive_path.name}", is_error=True)
+            return False
         except Exception as error:
-            self._send_log(f"[Error] Bozuk arşiv formatı {archive_path.name}: {error}", is_error=True)
+            self._send_log(f"[Error] Arşiv çıkarma hatası {archive_path.name}: {error}", is_error=True)
             return False
 
-    @staticmethod
-    def _extract_readable_strings_from_binary(binary_file_path: Path, output_text_path: Path):
-        """Binary (ikili) dosyalardaki okunabilir metinleri çıkartır."""
+    def _extract_readable_strings_from_binary(self, binary_file_path: Path, output_text_path: Path):
         try:
             with open(binary_file_path, 'rb') as binary_file:
                 binary_content = binary_file.read()
 
-            printable_characters = bytes(string.printable, 'ascii')
-            found_strings = []
-            current_string_buffer = bytearray()
+            string_pattern = re.compile(b'[ -~]{4,}')
 
-            for byte in binary_content:
-                if byte in printable_characters:
-                    current_string_buffer.append(byte)
-                else:
-                    if len(current_string_buffer) >= 4:
-                        found_strings.append(current_string_buffer.decode('ascii', errors='ignore'))
-                    current_string_buffer = bytearray()
+            matches_found = False
+            with open(output_text_path, 'w', encoding='utf-8') as output_file:
+                for match in string_pattern.finditer(binary_content):
+                    output_file.write(match.group().decode('ascii') + '\n')
+                    matches_found = True
 
-            if len(current_string_buffer) >= 4:
-                found_strings.append(current_string_buffer.decode('ascii', errors='ignore'))
+            if not matches_found and output_text_path.exists():
+                output_text_path.unlink()
 
-            if found_strings:
-                with open(output_text_path, 'w', encoding='utf-8') as output_file:
-                    for text_string in found_strings:
-                        output_file.write(text_string + '\n')
-        except Exception:
-            pass
+        except MemoryError:
+            self._send_log(f"[Bellek Hatası] {binary_file_path.name} belleğe sığmayacak kadar büyük.", is_error=True)
+        except Exception as e:
+            self._send_log(f"[Binary Analiz Hatası] {binary_file_path.name} analiz edilemedi: {e}", internal=True)
 
     def _isolate_and_analyze_flutter_engine(self, extracted_directory: Path, flutter_target_directory: Path) -> bool:
-        """Flutter dosyalarını tespit eder ve ayırır."""
         is_flutter_detected = False
 
         for root, dirs, _ in os.walk(extracted_directory):
@@ -258,10 +344,6 @@ class AnalysisEngine:
         return is_flutter_detected
 
     def _apply_reflutter(self, target_apk_path: Path, flutter_target_directory: Path) -> Optional[Path]:
-        """
-        Flutter uygulamalarını Ghidra analizine hazırlamak için 'reflutter' aracını çalıştırır.
-        Oluşan release.RE.apk dosyasını taşır ve yolunu geri döndürür.
-        """
         self._send_log(f"[Reflutter] Otomasyon başlatılıyor -> {target_apk_path.name}")
 
         working_dir = target_apk_path.parent
@@ -296,7 +378,6 @@ class AnalysisEngine:
             return None
 
     def _isolate_and_analyze_js_frameworks(self, extracted_directory: Path, js_target_directory: Path) -> str:
-        """React Native veya Cordova/Ionic tabanlı projeleri tespit eder."""
         framework_detected = ""
 
         for root, dirs, files in os.walk(extracted_directory):
@@ -307,8 +388,8 @@ class AnalysisEngine:
                 destination.mkdir(parents=True, exist_ok=True)
                 try:
                     shutil.copy2(str(source_bundle), str(destination / "index.android.bundle"))
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._send_log(f"[JS Analiz] {source_bundle.name} kopyalanamadı: {e}", internal=True)
                 break
 
         if not framework_detected:
@@ -321,14 +402,13 @@ class AnalysisEngine:
                         destination = js_target_directory / "Web_Assets"
                         try:
                             shutil.copytree(str(www_path), str(destination), dirs_exist_ok=True)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            self._send_log(f"[JS Analiz] Web klasörü kopyalanamadı: {e}", internal=True)
                         break
 
         return framework_detected
 
     def _isolate_and_analyze_native_libraries(self, extracted_directory: Path, native_target_directory: Path) -> int:
-        """C/C++ ile yazılmış .so kütüphanelerini ayrıştırır."""
         libraries_processed_count = 0
 
         for root, _, files in os.walk(extracted_directory):
@@ -351,7 +431,6 @@ class AnalysisEngine:
 
     @staticmethod
     def _generate_intellij_project_structure(project_directory: Path, project_name: str):
-        """Çıkarılan Java dosyaları için otomatik bir IntelliJ IDEA projesi oluşturur."""
         idea_settings_directory = project_directory / '.idea'
         idea_settings_directory.mkdir(exist_ok=True)
 
@@ -383,7 +462,6 @@ class AnalysisEngine:
 
     def _scan_and_decompile_dex(self, extracted_directory: Path, jar_output_directory: Path,
                                 intellij_project_directory: Path, application_name: str):
-        """.dex dosyalarını tespit edip dex2jar kullanarak .jar formatına dönüştürür."""
         class_to_dex_mapping = {}
         mapping_json_file = intellij_project_directory / "class_mapping.json"
 
@@ -424,6 +502,9 @@ class AnalysisEngine:
                                             "source_jar": str(jar_file_path.name)
                                         }
                                 jar_archive.extractall(intellij_project_directory)
+                        except zipfile.BadZipFile:
+                            self._send_log(f"[IntelliJ Hatası] {jar_file_path.name} bozuk bir zip arşivi.",
+                                           is_error=True)
                         except Exception as extraction_error:
                             self._send_log(f"[IntelliJ Hatası] {jar_file_path.name} açılamadı: {extraction_error}",
                                            is_error=True)
@@ -432,12 +513,11 @@ class AnalysisEngine:
             try:
                 with open(mapping_json_file, 'w', encoding='utf-8') as mapping_file:
                     json.dump(class_to_dex_mapping, mapping_file, indent=4)
-            except Exception:
-                pass
+            except Exception as e:
+                self._send_log(f"[Mapping Hatası] class_mapping.json oluşturulamadı: {e}", internal=True)
 
     def _scan_for_vulnerabilities_and_secrets(self, directories_to_scan: list, report_output_directory: Path,
                                               application_name: str) -> tuple:
-        """Belirtilen dizinlerde regex kurallarına göre zafiyet ve gizli anahtar taraması yapar."""
         master_report_path = report_output_directory / f"{application_name}_Master_Report.json"
         categorized_base_dir = report_output_directory / "Categorized_Findings"
 
@@ -470,7 +550,11 @@ class AnalysisEngine:
                             allowed_extensions):
                         file_path = Path(root_path) / file_name
                         try:
-                            if file_path.stat().st_size > 15 * 1024 * 1024: continue
+                            file_size_bytes = file_path.stat().st_size
+                            is_high_value_dart_dump = file_name.lower() in ("pp.txt", "objs.txt")
+                            size_limit_bytes = (60 if is_high_value_dart_dump else 15) * 1024 * 1024
+
+                            if file_size_bytes > size_limit_bytes: continue
 
                             with open(file_path, 'r', encoding='utf-8', errors='ignore') as current_file:
                                 file_content = current_file.read()
@@ -499,21 +583,24 @@ class AnalysisEngine:
                                                 try:
                                                     relative_file_path = str(
                                                         file_path.relative_to(source_directory.parent))
-                                                except:
+                                                except ValueError:
                                                     relative_file_path = str(file_path)
 
                                                 scan_results[category_name].append({
                                                     "found_value": extracted_value,
                                                     "file_location": relative_file_path
                                                 })
-                        except Exception:
-                            pass
+                        except Exception as read_error:
+                            self._send_log(f"[Tarama Hatası] {file_name} okunamadı: {read_error}", internal=True)
 
         cleaned_results = {key: value for key, value in scan_results.items() if value}
 
         if cleaned_results:
-            with open(master_report_path, 'w', encoding='utf-8') as final_report:
-                json.dump(cleaned_results, final_report, indent=4)
+            try:
+                with open(master_report_path, 'w', encoding='utf-8') as final_report:
+                    json.dump(cleaned_results, final_report, indent=4)
+            except Exception as e:
+                self._send_log(f"[Rapor Hatası] Ana rapor kaydedilemedi: {e}", is_error=True)
 
             folder_mapping = {
                 "Cloud": "Cloud_Services",
@@ -538,24 +625,21 @@ class AnalysisEngine:
                 specific_folder.mkdir(parents=True, exist_ok=True)
 
                 category_file_path = specific_folder / f"{category}.json"
-                with open(category_file_path, 'w', encoding='utf-8') as cat_file:
-                    json.dump({
-                        "category": category,
-                        "total_found": len(items),
-                        "findings": items
-                    }, cat_file, indent=4)
+                try:
+                    with open(category_file_path, 'w', encoding='utf-8') as cat_file:
+                        json.dump({
+                            "category": category,
+                            "total_found": len(items),
+                            "findings": items
+                        }, cat_file, indent=4)
+                except Exception as e:
+                    self._send_log(f"[Rapor Hatası] Kategori raporu oluşturulamadı ({category}): {e}", internal=True)
 
             return True, master_report_path.name
 
         return False, ""
 
     def _detect_available_architecture(self, dirs: dict) -> Optional[str]:
-        """
-        flutter_files/lib altında orijinal libapp.so bulunan ilk mimariyi
-        (öncelik sırasına göre: arm64-v8a > armeabi-v7a > x86_64 > x86) döndürür.
-        Öncelik listesinde eşleşme yoksa diskte fiilen bulunan herhangi bir
-        mimariyi kabul eder. Hiçbiri yoksa None döner.
-        """
         architecture_priority = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"]
         flutter_lib_dir = dirs["flutter_files"] / "lib"
 
@@ -571,7 +655,6 @@ class AnalysisEngine:
         return None
 
     def _prepare_ghidra_workspace(self, dirs: dict, target_arch: Optional[str]):
-        """Tespit edilen mimariye ait orijinal + (varsa) patch'lenmiş kütüphaneleri Ghidra workspace'ine toplar."""
         self._send_log("[Ghidra] Tüm kütüphaneler (.so) çalışma alanına toplanıyor...", internal=True)
         ghidra_dir = dirs["ghidra_workspace"]
 
@@ -609,18 +692,151 @@ class AnalysisEngine:
             f"[Ghidra] Hazır! Toplam {toplam_kutuphane} adet kütüphane Ghidra Workspace'e kopyalandı (mimari: {target_arch}).",
             internal=False)
 
-    def _run_blutter_analysis(self, dirs: dict, target_arch: str) -> bool:
-        """
-        Blutter'ı çalıştırarak Dart AOT snapshot'ından class/method/string tablosunu
-        ve Ghidra/IDA script'lerini çıkartır.
 
-        ÖNEMLİ: reflutter'dan geçmiş (patched) libflutter.so DEĞİL, orijinal eşleşen
-        libapp.so + libflutter.so çifti kullanılmalı; aksi halde Blutter Dart
-        sürümünü doğru tespit edemez ve hata verir.
+    def _resolve_blutter_python(self, blutter_script: Path) -> str:
 
-        Blutter şu an yalnızca arm64-v8a destekliyor; çağıran taraf (process_application)
-        bunu garanti etmelidir.
+        custom_python = self.dependencies.get('blutter_python')
+        if custom_python and Path(custom_python).exists():
+            return custom_python
+
+        exe_name = "python.exe" if os.name == 'nt' else "python3"
+        bin_dir = "Scripts" if os.name == 'nt' else "bin"
+
+        venv_candidates = [
+            blutter_script.parent / "venv" / bin_dir / exe_name,
+            blutter_script.parent / ".venv" / bin_dir / exe_name,
+        ]
+        for candidate in venv_candidates:
+            if candidate.exists():
+                return str(candidate)
+
+        return sys.executable
+
+    def _ensure_blutter_python_dependencies(self, python_executable: str, blutter_script: Path) -> bool:
+
+        try:
+            check_result = subprocess.run(
+                [python_executable, "-c", "import requests"],
+                capture_output=True, text=True, timeout=30
+            )
+            if check_result.returncode == 0:
+                return True
+        except Exception as e:
+            self._send_log(f"[Blutter] Python bağımlılık kontrolü yapılamadı: {e}", internal=True)
+
+        self._send_log(
+            f"[Blutter] '{Path(python_executable).name}' içinde 'requests' modülü bulunamadı, "
+            "otomatik kurulum deneniyor...", internal=False)
+
+        requirements_file = blutter_script.parent / "requirements.txt"
+        if requirements_file.exists():
+            install_command = [python_executable, "-m", "pip", "install", "-r", str(requirements_file)]
+        else:
+            install_command = [python_executable, "-m", "pip", "install", "requests"]
+
+        is_success, error_message = self._execute_terminal_command(
+            install_command,
+            log_prefix="[Blutter Pip]",
+            timeout_seconds=180,
+            custom_cwd=blutter_script.parent
+        )
+
+        if not is_success:
+            self._send_log(f"[Blutter] Gerekli paketler kurulamadı: {error_message}", is_error=True)
+            return False
+
+        self._send_log("[Blutter] Gerekli Python paketleri kuruldu.", internal=False)
+        return True
+
+    def _resolve_blutter_fix_script(self, blutter_script: Path) -> Optional[Path]:
+
+        custom_path = self.dependencies.get('blutter_fix_script')
+        if custom_path and Path(custom_path).exists():
+            return Path(custom_path)
+
+        default_path = blutter_script.parent / "fix_blutter_windows.ps1"
+        if default_path.exists():
+            return default_path
+
+        return None
+
+    def _run_blutter_fix_script(self, blutter_script: Path) -> bool:
+
+        if os.name != 'nt':
+            return False
+
+        fix_script = self._resolve_blutter_fix_script(blutter_script)
+        if not fix_script:
+            self._send_log(
+                "[Blutter Onarım] fix_blutter_windows.ps1 bulunamadı, otomatik onarım atlandı.",
+                internal=True)
+            return False
+
+        self._send_log(
+            "[Blutter Onarım] İlk deneme başarısız oldu, bilinen Windows sorunları için "
+            "otomatik onarım script'i çalıştırılıyor...",
+            internal=False)
+
+        command_arguments = [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(fix_script), "-RepoRoot", str(blutter_script.parent)
+        ]
+
+        is_success, error_message = self._execute_terminal_command(
+            command_arguments,
+            log_prefix="[Blutter Onarım]",
+            timeout_seconds=180,
+            custom_cwd=blutter_script.parent
+        )
+
+        if not is_success:
+            self._send_log(f"[Blutter Onarım] Script çalıştırılamadı: {error_message}", is_error=True)
+            return False
+
+
+        build_dir = blutter_script.parent / "build"
+        if build_dir.exists():
+            try:
+                shutil.rmtree(build_dir, ignore_errors=True)
+                self._send_log("[Blutter Onarım] Eski build klasörü temizlendi.", internal=True)
+            except Exception as e:
+                self._send_log(f"[Blutter Onarım] Build klasörü temizlenemedi: {e}", internal=True)
+
+        self._send_log("[Blutter Onarım] Onarım tamamlandı, analiz tekrar deneniyor...", internal=False)
+        return True
+
+
+    def _log_blutter_extraction_summary(self, output_dir: Path):
         """
+        Blutter çıktısını (asm/, pp.txt, objs.txt, blutter_frida.js) özetler
+        ve kaç dosya / ne kadar veri çıkarıldığını kullanıcıya bildirir.
+
+        - asm/*.txt : sembollerle (fonksiyon/sınıf isimleriyle) etiketlenmiş,
+          okunabilir hale getirilmiş Dart assembly dökümü.
+        - pp.txt    : Object Pool dökümü (tüm sabit string'ler - API key,
+          endpoint, secret ihtimali en yüksek dosya).
+        - objs.txt  : Nested object pool dökümü.
+        - blutter_frida.js : hazır Frida hook script'i.
+        """
+        asm_dir = output_dir / "asm"
+        asm_file_count = len(list(asm_dir.rglob("*.txt"))) if asm_dir.exists() else 0
+
+        pp_file = output_dir / "pp.txt"
+        pp_size_kb = pp_file.stat().st_size / 1024 if pp_file.exists() else 0
+
+        objs_file = output_dir / "objs.txt"
+        objs_size_kb = objs_file.stat().st_size / 1024 if objs_file.exists() else 0
+
+        frida_ready = (output_dir / "blutter_frida.js").exists()
+
+        self._send_log(
+            f"[Blutter] Çıkarım özeti -> {asm_file_count} sembollü assembly dosyası (asm/), "
+            f"pp.txt {pp_size_kb:.0f} KB (Dart string/object pool), "
+            f"objs.txt {objs_size_kb:.0f} KB, "
+            f"{'Frida script hazır' if frida_ready else 'Frida script bulunamadı'}.",
+            internal=False)
+
+    def _run_blutter_analysis(self, dirs: dict, target_arch: str, _is_retry: bool = False) -> bool:
         blutter_script_path = self.dependencies.get('blutter_script')
         if not blutter_script_path or not Path(blutter_script_path).exists():
             self._send_log(
@@ -643,30 +859,48 @@ class AnalysisEngine:
         output_dir = dirs["blutter_output"] / target_arch
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        blutter_python = self._resolve_blutter_python(blutter_script)
+
+        if not _is_retry:
+            self._ensure_blutter_python_dependencies(blutter_python, blutter_script)
+
         self._send_log(
             "[Blutter] Dart snapshot analizi başlatılıyor (ilk çalıştırmada Dart SDK derlemesi uzun sürebilir)...",
             internal=False)
 
-        command_arguments = [sys.executable, str(blutter_script), str(input_lib_dir), str(output_dir)]
+        command_arguments = [blutter_python, str(blutter_script), str(input_lib_dir), str(output_dir)]
+
+        subprocess_env = self._get_vsdev_env() if os.name == 'nt' else None
 
         is_success, error_message = self._execute_terminal_command(
             command_arguments,
             log_prefix="[Blutter]",
             timeout_seconds=3600,
-            custom_cwd=blutter_script.parent
+            custom_cwd=blutter_script.parent,
+            env=subprocess_env
         )
 
         if is_success:
             self._send_log(f"[Blutter] Analiz tamamlandı! Çıktı: {output_dir}", internal=False)
+            self._log_blutter_extraction_summary(output_dir)
             return True
-        else:
-            self._send_log(f"[Blutter Hatası] Analiz başarısız oldu: {error_message}", is_error=True)
-            return False
+
+        self._send_log(f"[Blutter Hatası] Analiz başarısız oldu: {error_message}", is_error=True)
+
+        if not _is_retry and "ModuleNotFoundError" in error_message:
+            self._send_log(
+                "[Blutter] Eksik Python modülü tespit edildi, bağımlılıklar kuruluyor ve tekrar deneniyor...",
+                internal=False)
+            if self._ensure_blutter_python_dependencies(blutter_python, blutter_script):
+                return self._run_blutter_analysis(dirs, target_arch, _is_retry=True)
+
+        if not _is_retry and os.name == 'nt' and not self.stop_event.is_set():
+            if self._run_blutter_fix_script(blutter_script):
+                return self._run_blutter_analysis(dirs, target_arch, _is_retry=True)
+
+        return False
 
     def run_ghidra_analysis(self, ghidra_workspace_dir: Path, project_name: str) -> bool:
-        """
-        Ghidra'yı headless modda çalıştırarak çalışma alanındaki TÜM (.so) dosyalarını projeye dahil eder.
-        """
         ghidra_headless_path = self.dependencies.get('ghidra_headless')
 
         if not ghidra_headless_path or not Path(ghidra_headless_path).exists():
@@ -709,7 +943,6 @@ class AnalysisEngine:
             return False
 
     def process_application(self, target_apk_file: Path, user_options: dict) -> Optional[Path]:
-        """Tüm analiz sürecini (çıkarma, decompile etme, tarama) yöneten ana akış (pipeline) fonksiyonu."""
         if self.stop_event.is_set(): return None
 
         file_extension = target_apk_file.suffix.lower()
@@ -791,12 +1024,16 @@ class AnalysisEngine:
             if native_lib_count > 0:
                 self._send_log(f"[Isolator] {native_lib_count} native library (.so) dosyası çıkartıldı.", internal=True)
 
+            blutter_output_ready_dir = None
+
             if is_flutter_app:
                 detected_arch = self._detect_available_architecture(dirs)
 
                 if user_options.get('enable_blutter') and self.dependencies.get('blutter_script'):
                     if detected_arch == "arm64-v8a":
-                        self._run_blutter_analysis(dirs, detected_arch)
+                        blutter_success = self._run_blutter_analysis(dirs, detected_arch)
+                        if blutter_success:
+                            blutter_output_ready_dir = dirs["blutter_output"] / detected_arch
                     elif detected_arch:
                         self._send_log(
                             f"[Blutter] Şu an yalnızca arm64-v8a destekleniyor, tespit edilen mimari ({detected_arch}) atlandı.",
@@ -817,6 +1054,14 @@ class AnalysisEngine:
 
                 if is_flutter_app: directories_to_scan.append(dirs["flutter_files"])
                 if detected_js_framework: directories_to_scan.append(dirs["js_framework_files"])
+
+
+                if blutter_output_ready_dir and blutter_output_ready_dir.exists():
+                    directories_to_scan.append(blutter_output_ready_dir)
+                    self._send_log(
+                        "[Scanner] Blutter'ın çıkardığı Dart assembly/object pool dosyaları "
+                        "(asm/, pp.txt, objs.txt) taramaya dahil edildi.",
+                        internal=True)
 
                 vulnerability_found, report_name = self._scan_for_vulnerabilities_and_secrets(directories_to_scan,
                                                                                               dirs["analysis_reports"],
