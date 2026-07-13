@@ -6,6 +6,7 @@ import concurrent.futures
 import tkinter as tk
 import json
 import subprocess
+import webbrowser
 from tkinter import filedialog, messagebox, ttk, scrolledtext
 from pathlib import Path
 import shutil
@@ -31,6 +32,7 @@ class VulnerabilityScannerUI:
             "button_danger": "#D96C6C",
             "button_success": "#7BAE7F",
             "button_intellij": "#A2708A",
+            "button_viewer": "#C9A66B",
             "border_color": "#D1DDE3",
             "terminal_bg": "#1E272E",
             "terminal_fg": "#E0E6ED"
@@ -184,6 +186,9 @@ class VulnerabilityScannerUI:
         style_manager.configure('IntelliJ.TButton', background=self.theme_colors["button_intellij"], foreground="white")
         style_manager.map('IntelliJ.TButton', background=[('active', '#8C5D76'), ('disabled', '#E3A1C3')])
 
+        style_manager.configure('Viewer.TButton', background=self.theme_colors["button_viewer"], foreground="white")
+        style_manager.map('Viewer.TButton', background=[('active', '#B38F52')])
+
         style_manager.configure('Horizontal.TProgressbar', background=self.theme_colors["button_primary"],
                                 troughcolor='#E4E6EB', borderwidth=0)
 
@@ -209,11 +214,22 @@ class VulnerabilityScannerUI:
         self.root_window.columnconfigure(0, weight=1)
         self.root_window.rowconfigure(0, weight=1)
 
-        main_canvas_area = tk.Canvas(self.root_window, bg=self.theme_colors["background"], highlightthickness=0)
-        main_canvas_area.pack(fill="both", expand=True, padx=35, pady=35)
+        # Ust taraftaki kartlar ile alttaki terminali birbirinden ayiran, ortadaki
+        # cizgiden tutup surukleyerek terminali buyutup kucultebilecegimiz dikey
+        # PanedWindow. Fare imleci sinira geldiginde otomatik olarak surukleme
+        # okuna doner.
+        vertical_paned_window = tk.PanedWindow(
+            self.root_window, orient=tk.VERTICAL,
+            bg=self.theme_colors["background"],
+            sashwidth=8, sashrelief="raised", bd=0,
+            opaqueresize=True
+        )
+        vertical_paned_window.pack(fill="both", expand=True, padx=35, pady=35)
+
+        top_section = tk.Frame(vertical_paned_window, bg=self.theme_colors["background"])
 
         file_card_container, file_card_content = self._build_interface_card(
-            main_canvas_area,
+            top_section,
             "1. Target Application Files",
             "Select Android application packages to analyze."
         )
@@ -227,7 +243,7 @@ class VulnerabilityScannerUI:
         self.browse_files_button.grid(row=0, column=1)
 
         settings_card_container, settings_card_content = self._build_interface_card(
-            main_canvas_area,
+            top_section,
             "2. Analysis Modules",
             "Select which actions to perform on the targets."
         )
@@ -252,14 +268,14 @@ class VulnerabilityScannerUI:
         for index, (description, boolean_variable) in enumerate(user_selectable_options):
             ttk.Checkbutton(settings_card_content, text=description, variable=boolean_variable).pack(anchor="w", pady=6)
 
-        action_card_container, action_card_content = self._build_interface_card(main_canvas_area,
+        action_card_container, action_card_content = self._build_interface_card(top_section,
                                                                                 "3. Execution & Results")
         action_card_container.pack(fill="x", pady=(0, 25))
 
         button_grid_frame = ttk.Frame(action_card_content, style='Card.TFrame')
         button_grid_frame.pack(fill="x")
 
-        button_grid_frame.columnconfigure((0, 1, 2, 3), weight=1)
+        button_grid_frame.columnconfigure((0, 1, 2, 3, 4), weight=1)
 
         self.start_analysis_button = ttk.Button(button_grid_frame, text="▶ START ANALYSIS", state="disabled",
                                                 command=self._event_start_analysis, style='Start.TButton')
@@ -277,6 +293,10 @@ class VulnerabilityScannerUI:
                                                     command=self._event_open_output_folder, style='Folder.TButton')
         self.open_output_folder_button.grid(row=0, column=3, padx=5, sticky="ew")
 
+        self.open_blutter_viewer_button = ttk.Button(button_grid_frame, text="🧬 Open Blutter Viewer",
+                                                     command=self._event_open_blutter_viewer, style='Viewer.TButton')
+        self.open_blutter_viewer_button.grid(row=0, column=4, padx=5, sticky="ew")
+
         self.activity_progress_bar = ttk.Progressbar(action_card_content, orient="horizontal", mode="indeterminate")
         self.activity_progress_bar.pack(fill="x", pady=(25, 10))
 
@@ -285,14 +305,17 @@ class VulnerabilityScannerUI:
                                               font=('Segoe UI', 10, 'italic'), style='Sub.TLabel')
         self.status_display_label.pack(anchor="w")
 
-        console_container = tk.Frame(main_canvas_area, bg=self.theme_colors["border_color"], padx=1, pady=1)
-        console_container.pack(fill="both", expand=True)
+        vertical_paned_window.add(top_section, minsize=380, stretch="never")
+
+        console_container = tk.Frame(vertical_paned_window, bg=self.theme_colors["border_color"], padx=1, pady=1)
 
         console_header = tk.Frame(console_container, bg="#192026", height=32)
         console_header.pack(fill="x")
         console_header.pack_propagate(False)
         tk.Label(console_header, text=">_ System Terminal", bg="#192026", fg="#A3B8CC",
                  font=('Consolas', 10, 'bold')).pack(side="left", padx=15)
+        tk.Label(console_header, text="⠿ üstteki çizgiden sürükleyerek büyüt/küçült", bg="#192026", fg="#5C6B7A",
+                 font=('Segoe UI', 8)).pack(side="right", padx=15)
 
         self.terminal_text_area = scrolledtext.ScrolledText(
             console_container, wrap="word", font=('Consolas', 10),
@@ -302,6 +325,8 @@ class VulnerabilityScannerUI:
         )
         self.terminal_text_area.pack(fill="both", expand=True)
         self.terminal_text_area.config(state="disabled")
+
+        vertical_paned_window.add(console_container, minsize=120, stretch="always")
 
     def _run_initial_system_diagnostics(self):
         self._write_system_log("--- System Diagnostics ---", internal=True)
@@ -545,6 +570,27 @@ class VulnerabilityScannerUI:
         except Exception as error:
             self._write_system_log(f"Could not open directory: {error}", is_error=True)
             messagebox.showerror("System Error", f"Failed to open folder:\n{error}")
+
+    def _event_open_blutter_viewer(self):
+        """main.py ile aynı klasordeki blutter_viewer.html dosyasini varsayilan tarayicida acar."""
+        viewer_path = self.base_directory / "blutter_viewer.html"
+
+        if not viewer_path.exists():
+            messagebox.showwarning(
+                "Blutter Viewer Bulunamadı",
+                f"'{viewer_path.name}' dosyası şu klasörde bulunamadı:\n{self.base_directory}\n\n"
+                "Dosyanın main.py ile aynı klasörde olduğundan emin olun."
+            )
+            self._write_system_log(f"[Viewer] {viewer_path.name} bulunamadı: {viewer_path}", is_error=True)
+            return
+
+        try:
+            webbrowser.open(viewer_path.resolve().as_uri())
+            self._write_system_log(f"[Viewer] Blutter Output Viewer tarayıcıda açıldı: {viewer_path.name}",
+                                   internal=True)
+        except Exception as error:
+            self._write_system_log(f"Blutter Viewer açılırken hata oluştu: {error}", is_error=True)
+            messagebox.showerror("System Error", f"Tarayıcı açılamadı:\n{error}")
 
     def _event_open_intellij(self):
         if not self.completed_project_directories: return

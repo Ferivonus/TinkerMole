@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Blutter Output Viewer</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --panel: #252526;
+    --border: #3c3c3c;
+    --text: #d4d4d4;
+    --accent: #4ec9b0;
+    --accent2: #569cd6;
+    --muted: #808080;
+    --highlight: #3a3d41;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 10px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; color: var(--accent); white-space: nowrap; }
+  button {
+    background: #0e639c; color: white; border: none; padding: 6px 12px;
+    border-radius: 4px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: #1177bb; }
+  input[type=text] {
+    background: #3c3c3c; border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; min-width: 160px;
+  }
+  label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+  #status { font-size: 12px; color: var(--muted); }
+
+  .main { flex: 1; display: flex; overflow: hidden; }
+  .panel-left {
+    width: 380px; min-width: 260px; border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 8px;
+  }
+  .panel-right { flex: 1; overflow-y: auto; padding: 12px 16px; }
+
+  .file-item { margin-bottom: 4px; }
+  .file-header {
+    cursor: pointer; padding: 4px 6px; border-radius: 3px; font-size: 12px;
+    display: flex; justify-content: space-between; color: var(--accent2);
+  }
+  .file-header:hover { background: var(--highlight); }
+  .file-header.framework { color: var(--muted); }
+  .class-item { margin-left: 14px; }
+  .class-header { cursor: pointer; padding: 2px 6px; font-size: 12px; color: var(--accent); border-radius: 3px; }
+  .class-header:hover { background: var(--highlight); }
+  .method-item {
+    margin-left: 14px; padding: 2px 6px; font-size: 12px; cursor: pointer;
+    border-radius: 3px; color: var(--text); word-break: break-word;
+  }
+  .method-item:hover, .method-item.active { background: var(--highlight); }
+  .hidden { display: none; }
+
+  .badge {
+    font-size: 10px; background: #333; color: var(--muted); padding: 0 5px;
+    border-radius: 8px; margin-left: 6px; flex-shrink: 0;
+  }
+
+  pre {
+    background: #181818; padding: 12px; border-radius: 4px; overflow-x: auto;
+    font-family: Consolas, "Courier New", monospace; font-size: 12.5px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .pp-hit { color: #ce9178; font-weight: bold; }
+  .detail-title { font-size: 14px; color: var(--accent2); margin-bottom: 4px; word-break: break-word; }
+  .detail-meta { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+  .tab-btn {
+    background: var(--panel); color: var(--muted); border: 1px solid var(--border);
+    padding: 6px 14px; border-radius: 4px 4px 0 0; cursor: pointer; font-size: 12px;
+  }
+  .tab-btn.active { color: var(--accent); border-bottom: 2px solid var(--accent); }
+
+  .pp-row {
+    display: flex; gap: 10px; padding: 4px 6px; font-size: 12.5px;
+    border-bottom: 1px solid #2a2a2a; font-family: Consolas, monospace;
+  }
+  .pp-key { color: var(--accent2); min-width: 90px; flex-shrink: 0; }
+  .placeholder { color: var(--muted); font-size: 13px; padding: 20px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Blutter Output Viewer</h1>
+  <button id="loadBtn">Indeks Yukle (blutter_index.json)</button>
+  <input type="file" id="fileInput" accept=".json" style="display:none">
+  <input type="text" id="searchBox" placeholder="Sinif / fonksiyon / dosya ara...">
+  <label><input type="checkbox" id="hideFramework" checked> Framework dosyalarini gizle</label>
+  <span id="status">Henuz indeks yuklenmedi.</span>
+</header>
+
+<div class="main">
+  <div class="panel-left" id="fileTree">
+    <div class="placeholder">Once "Indeks Yukle" ile blutter_indexer.py ciktisini (blutter_index.json) sec.</div>
+  </div>
+
+  <div class="panel-right">
+    <div class="tabs">
+      <div class="tab-btn active" data-tab="detail">Fonksiyon Goruntuleyici</div>
+      <div class="tab-btn" data-tab="pp">pp.txt Arama</div>
+    </div>
+
+    <div id="tab-detail">
+      <div class="placeholder">Soldan bir fonksiyon sec.</div>
+    </div>
+
+    <div id="tab-pp" class="hidden">
+      <input type="text" id="ppSearch" placeholder="pp.txt icinde ara (orn: http, api, secret, 0x1668)..." style="width:100%; margin-bottom:10px;">
+      <div id="ppResults" class="placeholder">Arama yapmak icin yukariya yaz.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let INDEX = null;
+
+document.getElementById('loadBtn').onclick = () => document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      INDEX = JSON.parse(ev.target.result);
+      document.getElementById('status').textContent =
+        `${INDEX.file_count} dosya, ${INDEX.pp_entry_count} pp.txt kaydi yuklendi.`;
+      renderFileTree();
+    } catch (err) {
+      document.getElementById('status').textContent = 'Hata: JSON okunamadi (' + err.message + ')';
+    }
+  };
+  reader.readAsText(file);
+};
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const tab = btn.dataset.tab;
+    document.getElementById('tab-detail').classList.toggle('hidden', tab !== 'detail');
+    document.getElementById('tab-pp').classList.toggle('hidden', tab !== 'pp');
+  };
+});
+
+document.getElementById('searchBox').oninput = () => renderFileTree();
+document.getElementById('hideFramework').onchange = () => renderFileTree();
+
+function matchesSearch(text, query) {
+  return (text || '').toLowerCase().includes(query);
+}
+
+function renderFileTree() {
+  if (!INDEX) return;
+  const query = document.getElementById('searchBox').value.trim().toLowerCase();
+  const hideFramework = document.getElementById('hideFramework').checked;
+  const container = document.getElementById('fileTree');
+  container.innerHTML = '';
+
+  let shown = 0;
+
+  INDEX.files.forEach((file) => {
+    if (hideFramework && file.is_framework) return;
+
+    let matchingClasses = file.classes;
+    if (query) {
+      matchingClasses = file.classes
+        .map(cls => {
+          const classMatches = matchesSearch(cls.name, query) || matchesSearch(file.path, query);
+          const matchingMethods = cls.methods.filter(m => matchesSearch(m.signature, query));
+          if (classMatches || matchingMethods.length > 0) {
+            return Object.assign({}, cls, { methods: classMatches ? cls.methods : matchingMethods });
+          }
+          return null;
+        })
+        .filter(Boolean);
+      if (matchingClasses.length === 0) return;
+    }
+
+    shown++;
+    const fileDiv = document.createElement('div');
+    fileDiv.className = 'file-item';
+
+    const header = document.createElement('div');
+    header.className = 'file-header' + (file.is_framework ? ' framework' : '');
+    header.innerHTML = `<span>${escapeHtml(file.path)}</span><span class="badge">${matchingClasses.length}</span>`;
+    fileDiv.appendChild(header);
+
+    const classContainer = document.createElement('div');
+    classContainer.className = query ? '' : 'hidden';
+
+    matchingClasses.forEach(cls => {
+      const classDiv = document.createElement('div');
+      classDiv.className = 'class-item';
+      const classHeader = document.createElement('div');
+      classHeader.className = 'class-header';
+      classHeader.innerHTML = `${escapeHtml(cls.name)}<span class="badge">${cls.methods.length}</span>`;
+      classDiv.appendChild(classHeader);
+
+      const methodContainer = document.createElement('div');
+      methodContainer.className = query ? '' : 'hidden';
+
+      cls.methods.forEach(m => {
+        const mDiv = document.createElement('div');
+        mDiv.className = 'method-item';
+        mDiv.textContent = m.signature || '(isimsiz fonksiyon)';
+        mDiv.onclick = () => showMethodDetail(file, cls, m, mDiv);
+        methodContainer.appendChild(mDiv);
+      });
+
+      classHeader.onclick = () => methodContainer.classList.toggle('hidden');
+      classDiv.appendChild(methodContainer);
+      classContainer.appendChild(classDiv);
+    });
+
+    header.onclick = () => classContainer.classList.toggle('hidden');
+    fileDiv.appendChild(classContainer);
+    container.appendChild(fileDiv);
+  });
+
+  if (shown === 0) {
+    container.innerHTML = '<div class="placeholder">Sonuc bulunamadi.</div>';
+  }
+}
+
+function resolveRefs(body) {
+  let html = escapeHtml(body);
+  if (!INDEX) return html;
+  html = html.replace(/pp\+0x[0-9a-fA-F]+/g, (match) => {
+    const hexPart = match.split('+')[1];
+    const norm = '0x' + parseInt(hexPart, 16).toString(16);
+    const val = INDEX.pp_entries[norm];
+    if (val) {
+      const short = val.length > 60 ? val.slice(0, 60) + '...' : val;
+      return `<span class="pp-hit" title="${escapeHtml(val)}">${match} /* ${escapeHtml(short)} */</span>`;
+    }
+    return match;
+  });
+  return html;
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function showMethodDetail(file, cls, method, el) {
+  document.querySelectorAll('.method-item').forEach(m => m.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelector('.tab-btn[data-tab="detail"]').click();
+
+  const container = document.getElementById('tab-detail');
+  container.innerHTML = `
+    <div class="detail-title">${escapeHtml(cls.name)}.${escapeHtml(method.signature)}</div>
+    <div class="detail-meta">
+      Dosya: ${escapeHtml(file.path)} ${file.is_framework ? '(framework)' : '(app kodu olabilir)'}<br>
+      Adres: ${method.addr} | Boyut: ${method.size} | pp referans sayisi: ${method.refs.length}
+    </div>
+    <pre>${resolveRefs(method.body)}</pre>
+  `;
+}
+
+document.getElementById('ppSearch').oninput = (e) => {
+  if (!INDEX) return;
+  const q = e.target.value.trim().toLowerCase();
+  const results = document.getElementById('ppResults');
+  if (!q) {
+    results.innerHTML = '<div class="placeholder">Arama yapmak icin yukariya yaz.</div>';
+    return;
+  }
+  const entries = Object.entries(INDEX.pp_entries)
+    .filter(([k, v]) => k.toLowerCase().includes(q) || v.toLowerCase().includes(q))
+    .slice(0, 300);
+
+  if (entries.length === 0) {
+    results.innerHTML = '<div class="placeholder">Sonuc yok.</div>';
+    return;
+  }
+
+  results.innerHTML = entries
+    .map(([k, v]) => `<div class="pp-row"><span class="pp-key">${k}</span><span>${escapeHtml(v)}</span></div>`)
+    .join('');
+};
+</script>
+</body>
+</html>

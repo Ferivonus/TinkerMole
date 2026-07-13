@@ -14,6 +14,7 @@ from typing import Optional
 
 from rules import VULNERABILITY_RULES
 from md_creator import MarkdownReportGenerator
+from vscode_settings_helper import create_vscode_settings
 
 
 class AnalysisEngine:
@@ -360,7 +361,7 @@ class AnalysisEngine:
             input_data=target_ip
         )
 
-        expected_output_path = working_dir / "release.RE.apk"
+        expected_output_path = working_dir / "release.RE.zip"
 
         if expected_output_path.exists():
             reflutter_dest_dir = flutter_target_directory / "Refluttered_APK"
@@ -373,7 +374,7 @@ class AnalysisEngine:
             return final_dest
         else:
             self._send_log(
-                f"[Reflutter Hata] İşlem başarısız oldu veya 'release.RE.apk' bulunamadı. Detay: {error_message}",
+                f"[Reflutter Hata] İşlem başarısız oldu veya 'release.RE.zip' bulunamadı. Detay: {error_message}",
                 is_error=True)
             return None
 
@@ -883,6 +884,8 @@ class AnalysisEngine:
         if is_success:
             self._send_log(f"[Blutter] Analiz tamamlandı! Çıktı: {output_dir}", internal=False)
             self._log_blutter_extraction_summary(output_dir)
+            create_vscode_settings(output_dir)
+            self._send_log(f"[Blutter] VS Code ayar dosyası oluşturuldu, '{output_dir}' klasörünü doğrudan açabilirsiniz.", internal=True)
             return True
 
         self._send_log(f"[Blutter Hatası] Analiz başarısız oldu: {error_message}", is_error=True)
